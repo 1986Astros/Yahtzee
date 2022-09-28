@@ -1,0 +1,426 @@
+﻿
+        #region "Collections - untested"
+        /// <summary>
+        /// Save an instance of a Class to the Registry.
+        /// </summary>
+        /// <param name="Source">Object to save</param>
+        /// <param name="Flags">Default is Fields and Properties marked Public</param>
+        /// <param name="ExtraOptions">Additional information about what to save</param>
+        public void SaveObject(object Source,
+            System.Reflection.BindingFlags Flags = System.Reflection.BindingFlags.GetField | System.Reflection.BindingFlags.GetProperty | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.IgnoreCase,
+            RegistryExSaveRestoreOptions ExtraOptions = null)
+        {
+            SaveObject(Source.GetType().Name, Source, Flags, ExtraOptions);
+        }
+        /// <summary>
+        /// Save an instance of a Class to the Registry.
+        /// </summary>
+        /// <param name="Name">Unique name for this instance of the type</param>
+        /// <param name="Source">Object to save</param>
+        /// <param name="Flags">Default is Fields and Properties marked Public</param>
+        /// <param name="ExtraOptions">Additional information about what to save</param>
+        public void SaveObject(string Name, object Source,
+            System.Reflection.BindingFlags Flags = System.Reflection.BindingFlags.SetField | System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.IgnoreCase,
+            RegistryExSaveRestoreOptions ExtraOptions = null)
+        {
+            RegistryKey rk = AddGeneralKey(Name);
+            System.Reflection.BindingFlags SetFlags = System.Reflection.BindingFlags.Instance;
+
+
+            if (0 != (Flags & System.Reflection.BindingFlags.Public))
+                SetFlags |= System.Reflection.BindingFlags.Public;
+            if (0 != (Flags & System.Reflection.BindingFlags.NonPublic))
+                SetFlags |= System.Reflection.BindingFlags.NonPublic;
+            if (0 != (Flags & System.Reflection.BindingFlags.IgnoreCase))
+                SetFlags |= System.Reflection.BindingFlags.IgnoreCase;
+
+            try
+            {
+                if (0 != (Flags & System.Reflection.BindingFlags.GetField))
+                {
+                    IEnumerable<System.Reflection.FieldInfo> FieldInfos = Source.GetType().GetFields(SetFlags);
+                    if (ExtraOptions != null)
+                    {
+                        foreach (string FieldName in ExtraOptions.ExtraFields)
+                        {
+                            if (!FieldInfos.Any(pi => pi.Name.ToLower() == FieldName.ToLower()))
+                            {
+                                System.Reflection.FieldInfo fi = Source.GetType().GetField(FieldName, System.Reflection.BindingFlags.IgnoreCase);
+                                if (fi != null)
+                                    FieldInfos.Append(fi);
+                            }
+                        }
+                    }
+
+                    foreach (System.Reflection.FieldInfo fi in FieldInfos)
+                    {
+                        PersistAttribute attr = (PersistAttribute)fi.GetCustomAttributes(typeof(PersistAttribute), false).FirstOrDefault(a => true);
+                        if (attr != null && !attr.Persist)
+                            continue;
+
+                        try
+                        {
+                            object Value = fi.GetValue(Source);
+
+                            if (Value == null)
+                                DeleteKey(fi.Name);
+                            else
+                            {
+                                Type FieldType = fi.FieldType;
+                                if (FieldType.IsArray || typeof(IList).IsAssignableFrom(FieldType))
+                                    SaveIList($"{Name}{Separator}{fi.Name}", (IList)Value);
+                                else
+                                {
+                                    TypeConverter tc = TypeDescriptor.GetConverter(FieldType);
+                                    if (tc.CanConvertFrom(typeof(String)) && tc.CanConvertTo(typeof(string)))
+                                        rk.SetValue(fi.Name, tc.ConvertToString(fi.GetValue(Source)));
+                                    else
+                                        SaveObject($"{Name}{Separator}{fi.Name}", Value, Flags);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"SaveObject({Name},{fi.Name}) failed: [{ex.GetType().Name}] {ex.Message}");
+                        }
+                    }
+                }
+
+                if (0 != (Flags & System.Reflection.BindingFlags.GetProperty))
+                {
+                    IEnumerable<System.Reflection.PropertyInfo> PropertyInfos = Source.GetType().GetProperties(SetFlags);
+                    if (ExtraOptions != null)
+                    {
+                        foreach (string PropertyName in ExtraOptions.ExtraProperties)
+                        {
+                            if (!PropertyInfos.Any(pi => pi.Name.ToLower() == PropertyName.ToLower()))
+                            {
+                                System.Reflection.PropertyInfo fi = Source.GetType().GetProperty(PropertyName, System.Reflection.BindingFlags.IgnoreCase);
+                                if (fi != null)
+                                    PropertyInfos.Append(fi);
+                            }
+                        }
+                    }
+
+                    foreach (System.Reflection.PropertyInfo pi in PropertyInfos)
+                    {
+                        PersistAttribute attr = (PersistAttribute)pi.GetCustomAttributes(typeof(PersistAttribute), false).FirstOrDefault(a => true);
+                        if (attr != null && !attr.Persist)
+                            continue;
+
+                        try
+                        {
+                            object Value = pi.GetValue(Source);
+
+                            if (Value == null)
+                                DeleteKey(pi.Name);
+                            else
+                            {
+                                Type PropertyType = pi.PropertyType;
+                                if (PropertyType.IsArray || typeof(IList).IsAssignableFrom(PropertyType))
+                                    SaveIList($"{Name}{Separator}{pi.Name}", (IList)Value);
+                                else
+                                {
+                                    TypeConverter tc = TypeDescriptor.GetConverter(PropertyType);
+                                    if (tc.CanConvertFrom(typeof(String)) && tc.CanConvertTo(typeof(string)))
+                                        rk.SetValue(pi.Name, tc.ConvertToString(pi.GetValue(Source)));
+                                    else
+                                        SaveObject($"{Name}{Separator}{pi.Name}", Value, Flags);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"SaveObject({Name},{pi.Name}) failed: [{ex.GetType().Name}] {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"SaveObject({Name}) fatal error: [{ex.GetType().Name}] {ex.Message}");
+                throw ex;
+            }
+        }
+        /// <summary>
+        /// Save the contents of an IList to the Registry.
+        /// </summary>
+        /// <param name="KeyName">Restry key name</param>
+        /// <param name="Items">Items to write</param>
+        public void SaveIList(string KeyName, IList Items)
+        {
+            if (Items != null)
+            {
+                try
+                {
+                    DeleteKey(KeyName);
+
+                    Type ItemType = Items.GetType();
+
+                    if (ItemType.IsArray && ItemType.GetArrayRank() > 1)
+                        throw new Exception("RegistryEx.SaveArray does not accept multi-dimensional arrays.");
+                    else if (Items.Count == 0)
+                        return;
+                    else
+                        ItemType = ItemType.GetGenericArguments()[0];   // this fails if the array is heterogenous
+
+                    RegistryKey rk = AddGeneralKey(KeyName);
+                    TypeConverter tc = TypeDescriptor.GetConverter(ItemType);
+                    if (tc.CanConvertFrom(typeof(String)) && tc.CanConvertTo(typeof(string)))
+                        for (int i = 0; i < Items.Count; ++i)
+                            rk.SetValue(i.ToString(), tc.ConvertToString(Items[i]));
+                    else
+                        for (int i = 0; i < Items.Count; ++i)
+                            SaveObject(i.ToString(), Items[i]);
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"RegistryEx.SaveArrray({KeyName}) fatal error: [{ex.GetType().Name}] {ex.Message}");
+                    throw ex;
+                }
+            }
+        }
+
+        public void RestoreObject(ref object Destination,
+            string Name = "",
+            System.Reflection.BindingFlags Flags = System.Reflection.BindingFlags.GetField | System.Reflection.BindingFlags.GetProperty | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.IgnoreCase,
+            RegistryExSaveRestoreOptions ExtraOptions = null)
+        {
+            if (Name == "")
+                Name = Destination.GetType().Name;
+            RegistryKey rk = AddGeneralKey(Name);
+            System.Reflection.BindingFlags GetFlags = System.Reflection.BindingFlags.Instance;
+            if (0 != (Flags & System.Reflection.BindingFlags.Public))
+                GetFlags |= System.Reflection.BindingFlags.Public;
+            if (0 != (Flags & System.Reflection.BindingFlags.NonPublic))
+                GetFlags |= System.Reflection.BindingFlags.NonPublic;
+            if (0 != (Flags & System.Reflection.BindingFlags.IgnoreCase))
+                GetFlags |= System.Reflection.BindingFlags.IgnoreCase;
+
+            if (0 != (Flags & System.Reflection.BindingFlags.SetField))
+                try
+                {
+                    IEnumerable<System.Reflection.FieldInfo> FieldInfos = Destination.GetType().GetFields(Flags);
+                    if (ExtraOptions != null)
+                        foreach (string FieldName in ExtraOptions.ExtraFields)
+                            if (!FieldInfos.Any(fi => fi.Name.ToLower() == FieldName.ToLower()))
+                            {
+                                System.Reflection.FieldInfo fi = Destination.GetType().GetField(FieldName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.GetField | System.Reflection.BindingFlags.IgnoreCase);
+                                if (fi != null)
+                                    FieldInfos.Append(fi);
+                            }
+                    foreach (System.Reflection.FieldInfo fi in FieldInfos)
+                    {
+                        PersistAttribute attr = (PersistAttribute)fi.GetCustomAttributes(typeof(PersistAttribute), false).FirstOrDefault(a => true);
+                        if (attr != null && !attr.Persist)
+                            continue;
+
+                        try
+                        {
+                            Type FieldType = fi.FieldType;
+
+                            if (FieldType.IsArray)
+                                RestoreArray($"{Name}{Separator}{fi.Name}", (IList)fi.GetValue(Destination));
+                            else if (typeof(IList).IsAssignableFrom(FieldType))
+                            {
+                                IList ListItems = (IList)fi.GetValue(Destination);
+                                if (ListItems == null)
+                                {
+                                    ListItems = (IList)Activator.CreateInstance(FieldType);
+                                    fi.SetValue(Destination, ListItems);
+                                }
+                                RestoreArray($"{Name}{Separator}{fi.Name}", ListItems);
+                            }
+                            else
+                            {
+                                TypeConverter tc = TypeDescriptor.GetConverter(FieldType);
+                                if (tc.CanConvertFrom(typeof(String)) && tc.CanConvertTo(typeof(string)))
+                                {
+                                    string Value = tc.ConvertToString(fi.GetValue(Destination));
+                                    fi.SetValue(Destination, tc.ConvertFromString(rk.GetValue(fi.Name, Value).ToString()));
+                                }
+                                else
+                                {
+                                    object Value = fi.GetValue(Destination);
+                                    if (Value == null)
+                                        Value = Activator.CreateInstance(FieldType);
+                                    RestoreObject(ref Value, $"{Name}{Separator}{fi.Name}", Flags, ExtraOptions);
+                                    fi.SetValue(Destination, Value);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"RestoreObject({Name},{fi.Name}) failed: [{ex.GetType().Name}] {ex.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"RestoreObject({Name}) fatal error: [{ex.GetType().Name}] {ex.Message}");
+                    throw ex;
+                }
+            if (0 != (Flags & System.Reflection.BindingFlags.SetProperty))
+                try
+                {
+                    IEnumerable<System.Reflection.PropertyInfo> PropertyInfos = Destination.GetType().GetProperties(Flags);
+                    if (ExtraOptions != null)
+                        foreach (string PropertyName in ExtraOptions.ExtraProperties)
+                            if (!PropertyInfos.Any(fi => fi.Name.ToLower() == PropertyName.ToLower()))
+                            {
+                                System.Reflection.PropertyInfo fi = Destination.GetType().GetProperty(PropertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.GetProperty | System.Reflection.BindingFlags.IgnoreCase);
+                                if (fi != null)
+                                    PropertyInfos.Append(fi);
+                            }
+                    foreach (System.Reflection.PropertyInfo pi in PropertyInfos)
+                    {
+                        PersistAttribute attr = (PersistAttribute)pi.GetCustomAttributes(typeof(PersistAttribute), false).FirstOrDefault(a => true);
+                        if (attr != null && !attr.Persist)
+                            continue;
+
+                        try
+                        {
+                            Type PropertyType = pi.PropertyType;
+
+                            if (PropertyType.IsArray)
+                                RestoreArray($"{Name}{Separator}{pi.Name}", (IList)pi.GetValue(Destination));
+                            else if (typeof(IList).IsAssignableFrom(PropertyType))
+                            {
+                                IList ListItems = (IList)pi.GetValue(Destination);
+                                if (ListItems == null)
+                                {
+                                    ListItems = (IList)Activator.CreateInstance(PropertyType);
+                                    pi.SetValue(Destination, ListItems);
+                                }
+                                RestoreArray($"{Name}{Separator}{pi.Name}", ListItems);
+                            }
+                            else
+                            {
+                                TypeConverter tc = TypeDescriptor.GetConverter(PropertyType);
+                                if (tc.CanConvertFrom(typeof(String)) && tc.CanConvertTo(typeof(string)))
+                                {
+                                    string Value = tc.ConvertToString(pi.GetValue(Destination));
+                                    pi.SetValue(Destination, tc.ConvertFromString(rk.GetValue(pi.Name, Value).ToString()));
+                                }
+                                else
+                                {
+                                    object Value = pi.GetValue(Destination);
+                                    if (Value == null)
+                                        Value = Activator.CreateInstance(PropertyType);
+                                    RestoreObject(ref Value, $"{Name}{Separator}{pi.Name}", Flags, ExtraOptions);
+                                    pi.SetValue(Destination, Value);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"RestoreObject({Name},{pi.Name}) failed: [{ex.GetType().Name}] {ex.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"RestoreObject({Name}) fatal error: [{ex.GetType().Name}] {ex.Message}");
+                    throw ex;
+                }
+        }
+        public object RestoreObject(Type Type,
+            System.Reflection.BindingFlags Flags = System.Reflection.BindingFlags.SetField | System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.IgnoreCase,
+            RegistryExSaveRestoreOptions ExtraOptions = null)
+        {
+            object Destination = Activator.CreateInstance(Type);
+            RestoreObject(ref Destination, Type.Name, Flags, ExtraOptions);
+            return Destination;
+        }
+        public void RestoreArray(string KeyName, IList Items)
+        {
+            if (Items != null)
+            {
+                try
+                {
+                    Type ItemType = Items.GetType().GetGenericArguments()[0];
+                    RegistryKey rk = AddGeneralKey(KeyName);
+                    TypeConverter tc = TypeDescriptor.GetConverter(ItemType);
+
+                    if (tc.CanConvertFrom(typeof(string)))
+                    {
+                        if (Items.GetType().IsArray)
+                        {
+                            if (tc.CanConvertTo(typeof(string)))
+                                for (int i = 0; i < Items.Count; ++i)
+                                {
+                                    Items[i] = tc.ConvertFromString((string)rk.GetValue(i.ToString(), tc.ConvertToString(Items[i])));
+                                }
+                            else
+                            {
+                                for (int i = 0; i < Items.Count; ++i)
+                                {
+                                    Items[i] = tc.ConvertFromString(rk.GetValue(i.ToString()).ToString());
+                                }
+                            }
+                        }
+                        else
+                        {
+                            IList NewItems = (IList)Activator.CreateInstance(Items.GetType());
+                            foreach (string SubKeyName in rk.GetValueNames().OrderBy(kn => int.Parse(kn)))
+                                NewItems.Add(tc.ConvertFromString(rk.GetValue(SubKeyName).ToString()));
+                            if (Items.Count > NewItems.Count)
+                            {
+                                if (NewItems.Count > 0)
+                                {
+                                    for (int i = 0; i < NewItems.Count; ++i)
+                                    {
+                                        Items[i] = NewItems[i];
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Items.Clear();
+                                foreach (object Thing in NewItems)
+                                {
+                                    Items.Add(Thing);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        throw new Exception($"RegistryEx.RestoreArray: No ConvertFromString available for type {ItemType.Name}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"RegistryEx.RestoreArray({KeyName}) fatal error: [{ex.GetType().Name}] {ex.Message}");
+                    throw ex;
+                }
+            }
+        }
+
+        #endregion
+
+    #region "Collections support"
+    public class RegistryExSaveRestoreOptions
+    {
+        public List<string> ExtraFields = new List<string>();
+        public List<string> ExtraProperties = new List<string>();
+        public void AddField(string FieldName)
+        {
+            ExtraFields.Add(FieldName);
+        }
+        public void AddProperty(string PropertyName)
+        {
+            ExtraProperties.Add(PropertyName);
+        }
+    }
+
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+    public class PersistAttribute : FlagsAttribute
+    {
+        public bool Persist = true;
+        public PersistAttribute(bool Persist) : base()
+        {
+            this.Persist = Persist;
+        }
+    }
+    #endregion
