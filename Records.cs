@@ -187,7 +187,7 @@ namespace Yahtzee
             {
                 return null;
             }
-            int NextID = Players.Count > 1 ? Players.Max(p => p.ID) + 1 : 1;
+            int NextID = Players.Count > 0 ? Players.Max(p => p.ID) + 1 : 0;
             PlayerInfo pi = new PlayerInfo() { PlayerName = Name, ID = NextID };
             Players.Add(pi);
             return pi;
